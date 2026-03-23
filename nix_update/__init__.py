@@ -246,6 +246,26 @@ def get_package_directories(package: Package) -> set[str]:
     return dirs
 
 
+def is_jj_repo(git_dir: str) -> bool:
+    return Path(git_dir, ".jj").is_dir()
+
+
+def jj_has_diff(git_dir: str, package: Package) -> bool:
+    diff = run(
+        ["jj", "--repository", git_dir, "diff", "--", *get_package_directories(package)]
+    )
+    return len(diff.stdout) > 0
+
+
+def jj_commit(git_dir: str, package: Package) -> None:
+    msg = format_commit_message(package)
+    files_changed = get_package_directories(package)
+    run(
+        ["jj", "--repository", git_dir, "commit", "--message", msg, *files_changed],
+        stdout=None,
+    )
+
+
 def git_has_diff(git_dir: str, package: Package) -> bool:
     # Check all paths in a single git diff command
     diff = run(["git", "-C", git_dir, "diff", "--", *get_package_directories(package)])
@@ -443,6 +463,7 @@ def handle_commit_operations(
     options: Options,
     package: Package,
     git_dir: str | None,
+    use_jj: bool = False,
 ) -> None:
     if options.commit:
         if git_dir is None:
@@ -451,7 +472,10 @@ def handle_commit_operations(
         if package.changelog:
             # If we have a changelog we will re-eval the package in case it has changed
             package.changelog = eval_attr(options).changelog
-        git_commit(git_dir, package)
+        if use_jj:
+            jj_commit(git_dir, package)
+        else:
+            git_commit(git_dir, package)
 
     if options.print_commit_message:
         print_commit_message(package)
@@ -480,14 +504,16 @@ def main(args: list[str] = sys.argv[1:]) -> None:
     if not git_dir:
         git_dir = find_git_root(options.import_path)
 
-    changes_detected = not git_dir or git_has_diff(git_dir, package)
+    use_jj = git_dir is not None and is_jj_repo(git_dir)
+    has_diff = jj_has_diff if use_jj else git_has_diff
+    changes_detected = not git_dir or has_diff(git_dir, package)
 
     if not changes_detected:
         info("No changes detected, skipping remaining steps")
         return
 
     run_post_update_checks(options, package)
-    handle_commit_operations(options, package, git_dir)
+    handle_commit_operations(options, package, git_dir, use_jj=use_jj)
 
 
 if __name__ == "__main__":
